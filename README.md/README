@@ -1,0 +1,119 @@
+# AI SQL Data Analyst (NovaCart, MySQL)
+
+Ask a business question in plain English (e.g. *"Why did the iPhone 14 128GB not sell much?"*).
+A local LLM (Ollama) plans the analysis, writes its own MySQL queries, validates and runs them, repairs its own
+mistakes, and explains the result in plain language.
+
+## Workflow
+
+```
+User question
+   |
+   v
+[schema_inspector]  read the live MySQL schema (+ real values of small columns, date ranges)
+   |
+   v
+[sql_analyst]       detect product / category in the question -> PLAN: 4-6 analysis steps (hypotheses)
+   |
+   v   (repeated for every step)
+[sql_generator]     step -> one MySQL SELECT
+   |
+   v
+[sql_validator]     SELECT-only? one statement? no forbidden words / system schemas?
+   |                does MySQL accept it (EXPLAIN)?
+   |  fail --------------------------+
+   v                                 v
+[query_executor]  --error / 0 rows-> [sql_repair]  (LLM fixes the query, up to 3 tries)
+   |  rows
+   v
+[answer_generator]  all results -> short answer, evidence, causes, actions, caveats (in Rs)
+   |
+   v
+app.py (Streamlit)  answer + every SQL query + result tables + charts
+```
+
+## Setup
+
+```bash
+python -m venv venv
+venv\Scripts\activate            # Windows   (Mac/Linux: source venv/bin/activate)
+pip install -r requirements.txt
+
+# 1. MySQL must be running. Put your login in .env (MYSQL_USER / MYSQL_PASSWORD / MYSQL_DATABASE)
+
+# 2. LLM (install Ollama from https://ollama.com first)
+ollama pull llama3.1:8b          # or qwen2.5-coder:7b for stronger SQL
+
+# 3. Fake data
+python database/seed_data.py
+
+# 4. App
+streamlit run app.py
+```
+
+`seed_data.py` creates the database/tables from `schema.sql` only when they are missing (your own schema wins if
+it already exists), empties the tables, and refills them. Re-running it is safe.
+
+> `schema.sql` was written from the INSERT statements in your seed script. If your real tables have extra or
+> differently named columns, the app still works (it reads the live schema); only the business rules in
+> `src/sql_generator.py` (revenue, return rate...) mention column names such as `quantity`, `unit_price`,
+> `item_discount`, `order_status`.
+
+## The dataset (novacart, an Apple-products store)
+
+8 categories, 48 products, 500 customers, 5,000 orders (all of 2025), ~10,000 order items, payments and returns.
+
+| Category | Examples |
+|---|---|
+| iPhone | iPhone 16e, 16, 16 Plus, 16 Pro, 16 Pro Max (storage variants), iPhone 15, iPhone 14 |
+| iPad | iPad (A16), iPad mini, iPad Air 11"/13", iPad Pro 11"/13" |
+| Laptops | MacBook Air 13"/15", MacBook Pro 14"/16" (M4, M4 Pro, M4 Max, M5) |
+| Desktops | iMac, Mac mini, Mac Studio |
+| AirPods | AirPods 4, AirPods 4 ANC, AirPods Pro 2, AirPods Max |
+| Apple Watch | SE, Series 10, Ultra 2 |
+| Home & TV | Apple TV 4K, HomePod, HomePod mini |
+| Accessories | Apple Pencil, Magic Mouse/Keyboard, AirTag, MagSafe Charger, USB-C adapter |
+
+Product names and launch dates follow Apple's line-up; **prices are illustrative** rupee prices, not official.
+A product never sells before its `launch_date`. To add or remove products, edit the `CATALOG` dictionary in
+`database/seed_data.py` and re-run the script.
+
+Four products are deliberately weak, each for a different reason, so you can check whether the AI finds the
+truth. The seed script prints them and saves them to `database/underperformers.txt`; the app shows them as
+example questions.
+
+| Product | Hidden cause |
+|---|---|
+| iPhone 14 128GB | Demand shrinks ~22% every month (40 units in Jan, 2 in Dec) |
+| AirPods Max | Priced ~3x the other AirPods, very few buyers |
+| MagSafe Charger (1 m) | ~25% of delivered items returned, mostly Damaged / Not as Expected |
+| MacBook Pro 14-inch (M5) | Launched 2025-10-22, so only ~2 months on sale |
+
+## Safety
+
+1. **Use a SELECT-only MySQL account for the AI** (strongly recommended):
+   ```sql
+   CREATE USER 'ai_reader'@'localhost' IDENTIFIED BY 'choose_a_password';
+   GRANT SELECT ON novacart.* TO 'ai_reader'@'localhost';
+   ```
+   then set `MYSQL_RO_USER` / `MYSQL_RO_PASSWORD` in `.env`. The seed script keeps using `MYSQL_USER`.
+2. Every AI session is also set to `READ ONLY`.
+3. The validator allows one `SELECT`/`WITH` statement only and blocks `DROP`, `UPDATE`, `INTO OUTFILE`, `SLEEP`,
+   access to `mysql` / `information_schema`, etc.
+4. Row cap (`MAX_ROWS`) and time limit (`QUERY_TIMEOUT_SECONDS`) on every query.
+5. Do not commit `.env` to Git.
+
+## Tests
+
+```bash
+python -m pytest -v
+```
+The validator tests need nothing. The database/executor tests need MySQL + the seeded data and are skipped
+automatically otherwise.
+
+## Ideas to extend
+
+- Add `reviews`, `marketing_campaigns` and `competitor_prices` tables: the planner will start using them
+  automatically because it reads the live schema.
+- Follow-up round: let the analyst read the first results and request extra queries.
+- Conversation memory for follow-up questions.

@@ -1,0 +1,7 @@
+mysql-connector-python>=8.3
+faker>=24.0
+requests>=2.31
+pandas>=2.0
+streamlit>=1.35
+python-dotenv>=1.0
+pytest>=8.0
